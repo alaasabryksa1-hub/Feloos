@@ -1,0 +1,52 @@
+
+name: Build Feloos Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip
+          mkdir -p extracted
+          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+          echo "=== Extracted project files ==="
+          find extracted -maxdepth 4 -type f | head -200
+
+      - name: Find Android project
+        id: project
+        run: |
+          FILE=$(find extracted -type f \
+            \( -name gradlew -o -name settings.gradle \
+            -o -name settings.gradle.kts \) | head -1)
+          if [ -z "$FILE" ]; then
+            echo "No Gradle project files found in ZIP."
+            exit 1
+          fi
+          DIR=$(dirname "$FILE")
+          if [ "$(basename "$FILE")" = "gradlew" ]; then
+            echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Gradle wrapper
+        run: |
+          find extracted -type f \
+            \( -name gradlew -o -name gradle-wrapper.jar \
+            -o -name build.gradle -o -name build.gradle.kts \)
+
+      - name: Build APK and AAB
+        working-directory: extracted
+        run: |
+          echo "Project extracted. Check the previous step's output before configuring the build."
