@@ -44,49 +44,54 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          FILE="app/src/main/assets/www/game.js"
-
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: Android game.js not found."
-            find app/src -name game.js -print
-            exit 1
-          fi
-
-          python3 - "$FILE" <<'PY'
-          import sys
+          python3 <<'PY'
           from pathlib import Path
+          import sys
 
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-
+          files = list(Path(".").rglob("game.js"))
           old = '''  if (state.onboarded && !state.signedOut) {
               if (state.open) resumeIfNeeded();
               else screen = "home";
             } else screen = "login";
             render();'''
 
-          new = '''  screen = "login";
+          new = '''  if (state.onboarded && !state.signedOut) {
+              screen = "home";
+            } else {
+              screen = "login";
+            }
             render();'''
 
-          if old not in text:
-              print("ERROR: Startup code did not match; no changes made.")
-              sys.exit(1)
+          patched = 0
+          for path in files:
+              text = path.read_text(encoding="utf-8")
+              if old in text:
+                  path.write_text(
+                      text.replace(old, new, 1),
+                      encoding="utf-8"
+                  )
+                  print(f"Updated startup screen: {path}")
+                  patched += 1
 
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          print("Startup screen changed to login.")
+          if patched == 0:
+              print("ERROR: Expected startup code was not found.")
+              sys.exit(1)
           PY
 
           KOTLIN=$(find app/src/main/java -name MainActivity.kt -print -quit)
 
-          if [ -n "$KOTLIN" ]; then
-            sed -i \
-              '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
-              "$KOTLIN"
-
-            sed -i \
-              's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
-              "$KOTLIN"
+          if [ -z "$KOTLIN" ]; then
+            echo "ERROR: MainActivity.kt not found."
+            exit 1
           fi
+
+          sed -i \
+            '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
+            "$KOTLIN"
+
+          sed -i \
+            's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
+            "$KOTLIN"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
