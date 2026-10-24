@@ -40,24 +40,53 @@ jobs:
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
           echo "Project root: $ROOT"
 
-      - name: Fix App Open Ad callback
+      - name: Fix startup screen and Ad callback
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          FILE=$(find app/src -name MainActivity.kt -print -quit)
+          FILE="app/src/main/assets/www/game.js"
 
-          if [ -z "$FILE" ]; then
-            echo "ERROR: MainActivity.kt not found."
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: Android game.js not found."
+            find app/src -name game.js -print
             exit 1
           fi
 
-          sed -i \
-            '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
-            "$FILE"
+          python3 - "$FILE" <<'PY'
+          import sys
+          from pathlib import Path
 
-          sed -i \
-            's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
-            "$FILE"
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+
+          old = '''  if (state.onboarded && !state.signedOut) {
+              if (state.open) resumeIfNeeded();
+              else screen = "home";
+            } else screen = "login";
+            render();'''
+
+          new = '''  screen = "login";
+            render();'''
+
+          if old not in text:
+              print("ERROR: Startup code did not match; no changes made.")
+              sys.exit(1)
+
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          print("Startup screen changed to login.")
+          PY
+
+          KOTLIN=$(find app/src/main/java -name MainActivity.kt -print -quit)
+
+          if [ -n "$KOTLIN" ]; then
+            sed -i \
+              '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
+              "$KOTLIN"
+
+            sed -i \
+              's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
+              "$KOTLIN"
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -86,7 +115,6 @@ jobs:
 
           if ! find release-files -type f -name '*.apk' | grep -q .; then
             echo "ERROR: No APK was generated."
-            find extracted -type d -path '*/build/outputs/*' -print
             exit 1
           fi
 
