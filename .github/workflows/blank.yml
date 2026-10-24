@@ -14,39 +14,49 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Extract project
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip
-          mkdir -p extracted
           unzip -q Feloos-diverse-1000-questions.zip -d extracted
-          echo "=== Extracted project files ==="
+          echo "Files inside ZIP:"
           find extracted -maxdepth 4 -type f | head -200
 
       - name: Find Android project
         id: project
         run: |
-          FILE=$(find extracted -type f \
-            \( -name gradlew -o -name settings.gradle \
-            -o -name settings.gradle.kts \) | head -1)
-          if [ -z "$FILE" ]; then
-            echo "No Gradle project files found in ZIP."
+          ROOT=$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit | xargs -r dirname)
+
+          if [ -z "$ROOT" ]; then
+            echo "ERROR: Android Gradle project not found in ZIP."
             exit 1
           fi
-          DIR=$(dirname "$FILE")
-          if [ "$(basename "$FILE")" = "gradlew" ]; then
-            echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          else
-            echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          fi
 
-      - name: Check Gradle wrapper
-        run: |
-          find extracted -type f \
-            \( -name gradlew -o -name gradle-wrapper.jar \
-            -o -name build.gradle -o -name build.gradle.kts \)
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Project root: $ROOT"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Build APK and AAB
-        working-directory: extracted
+        working-directory: ${{ steps.project.outputs.root }}
         run: |
-          echo "Project extracted. Check the previous step's output before configuring the build."
+          gradle assembleDebug
+          gradle bundleRelease
+
+      - name: Upload APK and AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Feloos-Android-Build
+          path: |
+            extracted/**/build/outputs/apk/**/*.apk
+            extracted/**/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
