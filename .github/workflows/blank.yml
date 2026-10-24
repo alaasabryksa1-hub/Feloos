@@ -20,9 +20,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract project
+      - name: Find and extract project ZIP
+        shell: bash
         run: |
-          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+          echo "Repository: $(pwd)"
+          echo "ZIP files found:"
+          find . -maxdepth 6 -type f -iname "*.zip" -print
+
+          ZIP_FILE=$(find . -type f \
+            -name "Feloos-diverse-1000-questions.zip" \
+            -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Feloos-diverse-1000-questions.zip not found."
+            echo "Check the repository, branch, filename and file path."
+            exit 1
+          fi
+
+          echo "Using: $ZIP_FILE"
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+          echo "Project extracted successfully."
 
       - name: Find Android project
         id: project
@@ -34,6 +52,8 @@ jobs:
 
           if [ -z "$ROOT" ]; then
             echo "ERROR: Android Gradle project not found."
+            find extracted -maxdepth 4 -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \)
             exit 1
           fi
 
@@ -46,9 +66,7 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import sys
 
-          files = list(Path(".").rglob("game.js"))
           old = '''  if (state.onboarded && !state.signedOut) {
               if (state.open) resumeIfNeeded();
               else screen = "home";
@@ -63,10 +81,13 @@ jobs:
             render();'''
 
           patched = 0
-          for path in files:
+          for path in Path(".").rglob("game.js"):
               text = path.read_text(encoding="utf-8")
               if old in text:
-                  path.write_text(text.replace(old, new, 1), encoding="utf-8")
+                  path.write_text(
+                      text.replace(old, new, 1),
+                      encoding="utf-8"
+                  )
                   print(f"Updated startup screen: {path}")
                   patched += 1
 
@@ -74,7 +95,8 @@ jobs:
               print("Startup code did not match; no startup changes made.")
           PY
 
-          KOTLIN=$(find app/src/main/java -name MainActivity.kt -print -quit)
+          KOTLIN=$(find app/src/main/java \
+            -name MainActivity.kt -print -quit)
 
           if [ -z "$KOTLIN" ]; then
             echo "ERROR: MainActivity.kt not found."
@@ -102,14 +124,17 @@ jobs:
 
           python3 - "$MANIFEST" <<'PY'
           import sys
+          import re
           from pathlib import Path
 
           path = Path(sys.argv[1])
           text = path.read_text(encoding="utf-8")
           app_id = "ca-app-pub-6809664188772391~4277962751"
 
-          import re
-          pattern = r'<meta-data\s+android:name="com\.google\.android\.gms\.ads\.APPLICATION_ID"\s+android:value="[^"]+"\s*/>'
+          pattern = (
+              r'<meta-data\s+android:name="com\.google\.android\.gms\.ads\.APPLICATION_ID"'
+              r'\s+android:value="[^"]+"\s*/>'
+          )
 
           metadata = (
               '        <meta-data\n'
@@ -118,9 +143,13 @@ jobs:
           )
 
           if re.search(pattern, text):
-              text = re.sub(pattern, metadata, text, count=1)
+              text = re.sub(pattern, lambda _: metadata, text, count=1)
           elif "</application>" in text:
-              text = text.replace("</application>", metadata + "\n    </application>", 1)
+              text = text.replace(
+                  "</application>",
+                  metadata + "\n    </application>",
+                  1
+              )
           else:
               print("ERROR: application tag not found.")
               sys.exit(1)
@@ -165,3 +194,4 @@ jobs:
           name: Feloos-Android-Build
           path: release-files/*
           if-no-files-found: error
+          
