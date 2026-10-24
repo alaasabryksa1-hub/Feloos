@@ -24,10 +24,11 @@ jobs:
         run: |
           unzip -q Feloos-diverse-1000-questions.zip -d extracted
           echo "Files inside ZIP:"
-          find extracted -maxdepth 4 -type f | head -200
+          find extracted -maxdepth 6 -type f | head -200
 
       - name: Find Android project
         id: project
+        shell: bash
         run: |
           ROOT=$(find extracted -type f \
             \( -name settings.gradle -o -name settings.gradle.kts \) \
@@ -40,6 +41,29 @@ jobs:
 
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
           echo "Project root: $ROOT"
+
+      - name: Fix App Open Ad callback
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          FILE="app/src/main/java/com/feloos/quiz/MainActivity.kt"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: MainActivity.kt not found at $FILE"
+            find app/src -name MainActivity.kt -print
+            exit 1
+          fi
+
+          sed -i \
+            '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
+            "$FILE"
+
+          sed -i \
+            's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
+            "$FILE"
+
+          echo "Checking callback references:"
+          grep -n 'AppOpenAdLoadCallback\|import.*AppOpenAd' "$FILE" || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -57,6 +81,6 @@ jobs:
         with:
           name: Feloos-Android-Build
           path: |
-            extracted/**/build/outputs/apk/**/*.apk
-            extracted/**/build/outputs/bundle/**/*.aab
+            **/build/outputs/apk/**/*.apk
+            **/build/outputs/bundle/**/*.aab
           if-no-files-found: error
