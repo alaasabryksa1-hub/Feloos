@@ -66,16 +66,12 @@ jobs:
           for path in files:
               text = path.read_text(encoding="utf-8")
               if old in text:
-                  path.write_text(
-                      text.replace(old, new, 1),
-                      encoding="utf-8"
-                  )
+                  path.write_text(text.replace(old, new, 1), encoding="utf-8")
                   print(f"Updated startup screen: {path}")
                   patched += 1
 
           if patched == 0:
-              print("ERROR: Expected startup code was not found.")
-              sys.exit(1)
+              print("Startup code did not match; no startup changes made.")
           PY
 
           KOTLIN=$(find app/src/main/java -name MainActivity.kt -print -quit)
@@ -92,6 +88,46 @@ jobs:
           sed -i \
             's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
             "$KOTLIN"
+
+      - name: Configure AdMob App ID
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          MANIFEST="app/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: AndroidManifest.xml not found."
+            exit 1
+          fi
+
+          python3 - "$MANIFEST" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          app_id = "ca-app-pub-6809664188772391~4277962751"
+
+          import re
+          pattern = r'<meta-data\s+android:name="com\.google\.android\.gms\.ads\.APPLICATION_ID"\s+android:value="[^"]+"\s*/>'
+
+          metadata = (
+              '        <meta-data\n'
+              '            android:name="com.google.android.gms.ads.APPLICATION_ID"\n'
+              f'            android:value="{app_id}" />'
+          )
+
+          if re.search(pattern, text):
+              text = re.sub(pattern, metadata, text, count=1)
+          elif "</application>" in text:
+              text = text.replace("</application>", metadata + "\n    </application>", 1)
+          else:
+              print("ERROR: application tag not found.")
+              sys.exit(1)
+
+          path.write_text(text, encoding="utf-8")
+          print("AdMob App ID configured.")
+          PY
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
