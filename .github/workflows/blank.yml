@@ -1,196 +1,111 @@
-
 name: Build Feloos Android
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
+workflow_dispatch:
+push:
+branches: [main]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+build:
+runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+  - name: Set up Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
 
-      - name: Find and extract project ZIP
-        shell: bash
-        run: |
-          echo "Repository: $(pwd)"
-          echo "ZIP files found:"
-          find . -maxdepth 6 -type f -iname "*.zip" -print
+  - name: Find and extract project ZIP
+    id: extract
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          ZIP_FILE=$(find . -type f \
-            -name "Feloos-diverse-1000-questions.zip" \
-            -print -quit)
+      echo "Repository: $(pwd)"
+      echo "ZIP files found:"
+      find . -type f -iname "*.zip" -not -path "./.git/*" -print
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Feloos-diverse-1000-questions.zip not found."
-            echo "Check the repository, branch, filename and file path."
-            exit 1
-          fi
+      ZIP_FILE=$(find . -type f -iname "*.zip" \
+        -not -path "./.git/*" \
+        -print -quit)
 
-          echo "Using: $ZIP_FILE"
-          mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
-          echo "Project extracted successfully."
+      if [ -z "$ZIP_FILE" ]; then
+        echo "ERROR: No ZIP file exists in the repository."
+        echo "Upload the Android project ZIP to the repository first."
+        exit 1
+      fi
 
-      - name: Find Android project
-        id: project
-        shell: bash
-        run: |
-          ROOT=$(find extracted -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit | xargs -r dirname)
+      echo "Using ZIP: $ZIP_FILE"
+      mkdir -p extracted
+      unzip -oq "$ZIP_FILE" -d extracted
+      echo "Project extracted successfully."
 
-          if [ -z "$ROOT" ]; then
-            echo "ERROR: Android Gradle project not found."
-            find extracted -maxdepth 4 -type f \
-              \( -name settings.gradle -o -name settings.gradle.kts \)
-            exit 1
-          fi
+  - name: Find Android project
+    id: project
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-          echo "Project root: $ROOT"
+      ROOT=$(find extracted -type f \
+        \( -name settings.gradle -o -name settings.gradle.kts \) \
+        -print -quit | xargs -r dirname)
 
-      - name: Fix startup screen and Ad callback
-        working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
+      if [ -z "$ROOT" ]; then
+        echo "ERROR: Android Gradle project not found in ZIP."
+        echo "Extracted files:"
+        find extracted -maxdepth 5 -type f | head -200
+        exit 1
+      fi
 
-          old = '''  if (state.onboarded && !state.signedOut) {
-              if (state.open) resumeIfNeeded();
-              else screen = "home";
-            } else screen = "login";
-            render();'''
+      echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+      echo "Project root: $ROOT"
 
-          new = '''  if (state.onboarded && !state.signedOut) {
-              screen = "home";
-            } else {
-              screen = "login";
-            }
-            render();'''
+  - name: Configure Android SDK
+    uses: android-actions/setup-android@v3
 
-          patched = 0
-          for path in Path(".").rglob("game.js"):
-              text = path.read_text(encoding="utf-8")
-              if old in text:
-                  path.write_text(
-                      text.replace(old, new, 1),
-                      encoding="utf-8"
-                  )
-                  print(f"Updated startup screen: {path}")
-                  patched += 1
+  - name: Set up Gradle
+    uses: gradle/actions/setup-gradle@v4
+    with:
+      gradle-version: '8.13'
 
-          if patched == 0:
-              print("Startup code did not match; no startup changes made.")
-          PY
+  - name: Build APK and AAB
+    working-directory: ${{ steps.project.outputs.root }}
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          KOTLIN=$(find app/src/main/java \
-            -name MainActivity.kt -print -quit)
+      if [ -f gradlew ]; then
+        chmod +x gradlew
+        ./gradlew assembleDebug bundleRelease
+      else
+        gradle assembleDebug bundleRelease
+      fi
 
-          if [ -z "$KOTLIN" ]; then
-            echo "ERROR: MainActivity.kt not found."
-            exit 1
-          fi
+  - name: Collect build files
+    shell: bash
+    run: |
+      set -euo pipefail
+      mkdir -p release-files
 
-          sed -i \
-            '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
-            "$KOTLIN"
+      find extracted -type f \
+        \( -name '*.apk' -o -name '*.aab' \) \
+        -exec cp {} release-files/ \;
 
-          sed -i \
-            's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
-            "$KOTLIN"
+      echo "Generated files:"
+      ls -lh release-files
 
-      - name: Configure AdMob App ID
-        working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
-        run: |
-          MANIFEST="app/src/main/AndroidManifest.xml"
+      if ! find release-files -type f -name '*.apk' | grep -q .; then
+        echo "ERROR: No APK was generated."
+        exit 1
+      fi
 
-          if [ ! -f "$MANIFEST" ]; then
-            echo "ERROR: AndroidManifest.xml not found."
-            exit 1
-          fi
-
-          python3 - "$MANIFEST" <<'PY'
-          import sys
-          import re
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-          app_id = "ca-app-pub-6809664188772391~4277962751"
-
-          pattern = (
-              r'<meta-data\s+android:name="com\.google\.android\.gms\.ads\.APPLICATION_ID"'
-              r'\s+android:value="[^"]+"\s*/>'
-          )
-
-          metadata = (
-              '        <meta-data\n'
-              '            android:name="com.google.android.gms.ads.APPLICATION_ID"\n'
-              f'            android:value="{app_id}" />'
-          )
-
-          if re.search(pattern, text):
-              text = re.sub(pattern, lambda _: metadata, text, count=1)
-          elif "</application>" in text:
-              text = text.replace(
-                  "</application>",
-                  metadata + "\n    </application>",
-                  1
-              )
-          else:
-              print("ERROR: application tag not found.")
-              sys.exit(1)
-
-          path.write_text(text, encoding="utf-8")
-          print("AdMob App ID configured.")
-          PY
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
-
-      - name: Build APK and AAB
-        working-directory: ${{ steps.project.outputs.root }}
-        run: |
-          gradle assembleDebug
-          gradle bundleRelease
-
-      - name: Collect build files
-        shell: bash
-        run: |
-          mkdir -p release-files
-
-          find extracted -type f -name '*.apk' \
-            -exec cp {} release-files/ \;
-
-          find extracted -type f -name '*.aab' \
-            -exec cp {} release-files/ \;
-
-          echo "Generated files:"
-          ls -lh release-files
-
-          if ! find release-files -type f -name '*.apk' | grep -q .; then
-            echo "ERROR: No APK was generated."
-            exit 1
-          fi
-
-      - name: Upload APK and AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: Feloos-Android-Build
-          path: release-files/*
-          if-no-files-found: error
+  - name: Upload APK and AAB
+    uses: actions/upload-artifact@v4
+    with:
+      name: Feloos-Android-Build
+      path: release-files/*
+      if-no-files-found: error
