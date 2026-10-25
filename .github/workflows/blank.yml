@@ -3,109 +3,26 @@ name: Build Feloos Android
 on:
 workflow_dispatch:
 push:
-branches: [main]
+branches:
+- main
 
 jobs:
 build:
 runs-on: ubuntu-latest
-
 steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+- name: Checkout repository
+uses: actions/checkout@v4
 
-  - name: Set up Java
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '17'
-
-  - name: Find and extract project ZIP
-    id: extract
+  - name: Inspect ZIP files
     shell: bash
     run: |
-      set -euo pipefail
-
+      set -eu
       echo "Repository: $(pwd)"
       echo "ZIP files found:"
-      find . -type f -iname "*.zip" -not -path "./.git/*" -print
-
-      ZIP_FILE=$(find . -type f -iname "*.zip" \
-        -not -path "./.git/*" \
-        -print -quit)
-
+      find . -maxdepth 6 -type f -iname "*.zip" -not -path "./.git/*" -print
+      ZIP_FILE="$(find . -maxdepth 6 -type f -iname "*.zip" -not -path "./.git/*" -print -quit)"
       if [ -z "$ZIP_FILE" ]; then
-        echo "ERROR: No ZIP file exists in the repository."
-        echo "Upload the Android project ZIP to the repository first."
+        echo "ERROR: No ZIP file found in the repository."
         exit 1
       fi
-
-      echo "Using ZIP: $ZIP_FILE"
-      mkdir -p extracted
-      unzip -oq "$ZIP_FILE" -d extracted
-      echo "Project extracted successfully."
-
-  - name: Find Android project
-    id: project
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      ROOT=$(find extracted -type f \
-        \( -name settings.gradle -o -name settings.gradle.kts \) \
-        -print -quit | xargs -r dirname)
-
-      if [ -z "$ROOT" ]; then
-        echo "ERROR: Android Gradle project not found in ZIP."
-        echo "Extracted files:"
-        find extracted -maxdepth 5 -type f | head -200
-        exit 1
-      fi
-
-      echo "root=$ROOT" >> "$GITHUB_OUTPUT"
-      echo "Project root: $ROOT"
-
-  - name: Configure Android SDK
-    uses: android-actions/setup-android@v3
-
-  - name: Set up Gradle
-    uses: gradle/actions/setup-gradle@v4
-    with:
-      gradle-version: '8.13'
-
-  - name: Build APK and AAB
-    working-directory: ${{ steps.project.outputs.root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      if [ -f gradlew ]; then
-        chmod +x gradlew
-        ./gradlew assembleDebug bundleRelease
-      else
-        gradle assembleDebug bundleRelease
-      fi
-
-  - name: Collect build files
-    shell: bash
-    run: |
-      set -euo pipefail
-      mkdir -p release-files
-
-      find extracted -type f \
-        \( -name '*.apk' -o -name '*.aab' \) \
-        -exec cp {} release-files/ \;
-
-      echo "Generated files:"
-      ls -lh release-files
-
-      if ! find release-files -type f -name '*.apk' | grep -q .; then
-        echo "ERROR: No APK was generated."
-        exit 1
-      fi
-
-  - name: Upload APK and AAB
-    uses: actions/upload-artifact@v4
-    with:
-      name: Feloos-Android-Build
-      path: release-files/*
-      if-no-files-found: error
+      echo "ZIP found: $ZIP_FILE"
