@@ -1,0 +1,167 @@
+
+name: Build Feloos Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Extract project
+        run: |
+          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          ROOT=$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit | xargs -r dirname)
+
+          if [ -z "$ROOT" ]; then
+            echo "ERROR: Android Gradle project not found."
+            exit 1
+          fi
+
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Project root: $ROOT"
+
+      - name: Fix startup screen and Ad callback
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import sys
+
+          files = list(Path(".").rglob("game.js"))
+          old = '''  if (state.onboarded && !state.signedOut) {
+              if (state.open) resumeIfNeeded();
+              else screen = "home";
+            } else screen = "login";
+            render();'''
+
+          new = '''  if (state.onboarded && !state.signedOut) {
+              screen = "home";
+            } else {
+              screen = "login";
+            }
+            render();'''
+
+          patched = 0
+          for path in files:
+              text = path.read_text(encoding="utf-8")
+              if old in text:
+                  path.write_text(text.replace(old, new, 1), encoding="utf-8")
+                  print(f"Updated startup screen: {path}")
+                  patched += 1
+
+          if patched == 0:
+              print("Startup code did not match; no startup changes made.")
+          PY
+
+          KOTLIN=$(find app/src/main/java -name MainActivity.kt -print -quit)
+
+          if [ -z "$KOTLIN" ]; then
+            echo "ERROR: MainActivity.kt not found."
+            exit 1
+          fi
+
+          sed -i \
+            '/^import com\.google\.android\.gms\.ads\.appopen\.AppOpenAdLoadCallback$/d' \
+            "$KOTLIN"
+
+          sed -i \
+            's/object : AppOpenAdLoadCallback()/object : AppOpenAd.AppOpenAdLoadCallback()/g' \
+            "$KOTLIN"
+
+      - name: Configure AdMob App ID
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          MANIFEST="app/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: AndroidManifest.xml not found."
+            exit 1
+          fi
+
+          python3 - "$MANIFEST" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          app_id = "ca-app-pub-6809664188772391~4277962751"
+
+          import re
+          pattern = r'<meta-data\s+android:name="com\.google\.android\.gms\.ads\.APPLICATION_ID"\s+android:value="[^"]+"\s*/>'
+
+          metadata = (
+              '        <meta-data\n'
+              '            android:name="com.google.android.gms.ads.APPLICATION_ID"\n'
+              f'            android:value="{app_id}" />'
+          )
+
+          if re.search(pattern, text):
+              text = re.sub(pattern, metadata, text, count=1)
+          elif "</application>" in text:
+              text = text.replace("</application>", metadata + "\n    </application>", 1)
+          else:
+              print("ERROR: application tag not found.")
+              sys.exit(1)
+
+          path.write_text(text, encoding="utf-8")
+          print("AdMob App ID configured.")
+          PY
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build APK and AAB
+        working-directory: ${{ steps.project.outputs.root }}
+        run: |
+          gradle assembleDebug
+          gradle bundleRelease
+
+      - name: Collect build files
+        shell: bash
+        run: |
+          mkdir -p release-files
+
+          find extracted -type f -name '*.apk' \
+            -exec cp {} release-files/ \;
+
+          find extracted -type f -name '*.aab' \
+            -exec cp {} release-files/ \;
+
+          echo "Generated files:"
+          ls -lh release-files
+
+          if ! find release-files -type f -name '*.apk' | grep -q .; then
+            echo "ERROR: No APK was generated."
+            exit 1
+          fi
+
+      - name: Upload APK and AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Feloos-Android-Build
+          path: release-files/*
+          if-no-files-found: error
