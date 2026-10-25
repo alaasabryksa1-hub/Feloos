@@ -1,28 +1,14 @@
-name: Build Feloos Android
+name: Test Feloos Workflow
 
 on:
-workflow_dispatch:
-push:
-branches:
-- main
+  workflow_dispatch:
 
 jobs:
-build:
-runs-on: ubuntu-latest
-steps:
-- name: Checkout repository
-uses: actions/checkout@v4
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check repository
+        uses: actions/checkout@v4
 
-  - name: Inspect ZIP files
-    shell: bash
-    run: |
-      set -eu
-      echo "Repository: $(pwd)"
-      echo "ZIP files found:"
-      find . -maxdepth 6 -type f -iname "*.zip" -not -path "./.git/*" -print
-      ZIP_FILE="$(find . -maxdepth 6 -type f -iname "*.zip" -not -path "./.git/*" -print -quit)"
-      if [ -z "$ZIP_FILE" ]; then
-        echo "ERROR: No ZIP file found in the repository."
-        exit 1
-      fi
-      echo "ZIP found: $ZIP_FILE"
+      - name: Show ZIP files
+        run: find . -type f -iname '*.zip' -print
