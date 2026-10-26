@@ -18,13 +18,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check original ZIP
+      - name: Verify and extract project ZIP
+        shell: bash
         run: |
-          test -f Feloos-diverse-1000-questions.zip
-          unzip -q Feloos-diverse-1000-questions.zip -d .
+          set -eu
+          ZIP_FILE="Feloos-diverse-1000-questions.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Project ZIP not found."
+            echo "Files in repository:"
+            find . -maxdepth 2 -type f | sort
+            exit 1
+          fi
+
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "Android project files:"
+          find extracted -name build.gradle -o -name build.gradle.kts -o -name AndroidManifest.xml
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -34,12 +47,24 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      - name: Build release APK
-        run: gradle -p Feloos/android assembleRelease
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -eu
+          PROJECT_DIR="extracted/Feloos/android"
 
-      - name: Upload APK
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "ERROR: Android Gradle project not found at $PROJECT_DIR"
+            echo "Actual extracted structure:"
+            find extracted -maxdepth 5 -type f | sort | head -300
+            exit 1
+          fi
+
+          gradle -p "$PROJECT_DIR" assembleDebug
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Feloos-release-apk
-          path: Feloos/android/app/build/outputs/apk/release/*.apk
+          name: Feloos-debug-apk
+          path: extracted/Feloos/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
