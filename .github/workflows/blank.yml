@@ -18,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify and extract project ZIP
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -eu
@@ -26,62 +26,71 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "ERROR: Project ZIP not found."
-            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
           unzip -q "$ZIP_FILE" -d extracted
 
-          echo "Android project files:"
-          find extracted \( -name build.gradle -o -name build.gradle.kts -o -name AndroidManifest.xml \) -print
+          PROJECT_DIR="extracted/Feloos/android"
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "ERROR: Android project not found."
+            find extracted -maxdepth 5 -type f | sort | head -300
+            exit 1
+          fi
 
-      - name: Inspect game startup logic
+      - name: Fix startup to home screen
         shell: bash
         run: |
+          set -eu
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          root = Path("extracted")
-          keywords = re.compile(
-              r"resumeIfNeeded|onboarded|signedOut|screen\s*=|"
-              r"localStorage|sessionStorage|DOMContentLoaded|"
-              r"questionIndex|currentQuestion|renderLogin|showLogin|"
-              r"initApp|function\s+init|function\s+start",
-              re.I
-          )
+          root = Path("extracted/Feloos")
+          android_game = root / "android/app/src/main/assets/www/game.js"
 
-          files = [
-              p for p in root.rglob("*")
-              if p.is_file() and p.name in ("game.js", "index.html")
-          ]
-
-          if not files:
-              print("ERROR: game.js or index.html was not found.")
+          if not android_game.is_file():
+              print("ERROR: Android game.js not found:", android_game)
+              for p in root.rglob("game.js"):
+                  print("Found:", p)
               raise SystemExit(1)
 
-          for file in files:
-              lines = file.read_text(errors="replace").splitlines()
-              print(f"\n===== FILE: {file} =====")
+          pattern = re.compile(
+              r'if\s*\(\s*state\.open\s*\)\s*'
+              r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
+              r'else\s*screen\s*=\s*["\']home["\']\s*;'
+          )
 
-              if file.name == "index.html":
-                  for i, line in enumerate(lines):
-                      if re.search(r"game\.js|index\.js", line, re.I):
-                          print(f"{i + 1}: {line}")
-                  continue
+          replacement = (
+              'if (state.open) { state.open = null; save(); } '
+              'screen = "home";'
+          )
 
-              hits = [
-                  i for i, line in enumerate(lines)
-                  if keywords.search(line)
-              ]
+          patched_android = False
 
-              shown = set()
-              for i in hits:
-                  for j in range(max(0, i - 5), min(len(lines), i + 7)):
-                      if j not in shown:
+          for file in root.rglob("game.js"):
+              content = file.read_text(errors="replace")
+              updated, count = pattern.subn(replacement, content, count=1)
+
+              if count:
+                  file.write_text(updated)
+                  print("PATCHED:", file)
+                  if file == android_game:
+                      patched_android = True
+
+          if not patched_android:
+              print("ERROR: Startup code did not match; no APK was built.")
+              lines = android_game.read_text(errors="replace").splitlines()
+              for i, line in enumerate(lines):
+                  if "resumeIfNeeded" in line or "state.open" in line:
+                      start = max(0, i - 5)
+                      end = min(len(lines), i + 7)
+                      for j in range(start, end):
                           print(f"{j + 1}: {lines[j]}")
-                          shown.add(j)
-                  print("---")
+                      print("---")
+              raise SystemExit(1)
+
+          print("Startup patch verified.")
           PY
 
       - name: Set up Java 17
@@ -99,16 +108,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          PROJECT_DIR="extracted/Feloos/android"
-
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "ERROR: Android Gradle project not found at $PROJECT_DIR"
-            echo "Actual extracted structure:"
-            find extracted -maxdepth 5 -type f | sort | head -300
-            exit 1
-          fi
-
-          gradle -p "$PROJECT_DIR" assembleDebug
+          gradle -p extracted/Feloos/android assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
