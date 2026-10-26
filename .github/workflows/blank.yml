@@ -23,22 +23,19 @@ jobs:
         run: |
           set -eu
           ZIP_FILE="Feloos-diverse-1000-questions.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP not found."
+          test -f "$ZIP_FILE" || {
+            echo "ERROR: Project ZIP not found"
             exit 1
-          fi
-
+          }
           unzip -q "$ZIP_FILE" -d extracted
-
           PROJECT_DIR="extracted/Feloos/android"
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "ERROR: Android project not found."
-            find extracted -maxdepth 5 -type f | sort | head -300
+          test -f "$PROJECT_DIR/settings.gradle" -o \
+               -f "$PROJECT_DIR/settings.gradle.kts" || {
+            echo "ERROR: Android project not found"
             exit 1
-          fi
+          }
 
-      - name: Fix startup to home screen
+      - name: Inspect AdMob configuration
         shell: bash
         run: |
           set -eu
@@ -47,50 +44,38 @@ jobs:
           import re
 
           root = Path("extracted/Feloos")
-          android_game = root / "android/app/src/main/assets/www/game.js"
+          patterns = [
+              r"ca-app-pub-\d{16,20}[~/]\d{8,12}",
+              r"3940256099942544",
+              r"testDevices",
+              r"setTestDeviceIds",
+              r"addTestDevice",
+              r"MobileAds\.initialize",
+              r"RequestConfiguration",
+              r"test.?ad",
+              r"AdRequest",
+          ]
+          regex = re.compile("|".join(patterns), re.I)
+          found = 0
 
-          if not android_game.is_file():
-              print("ERROR: Android game.js not found:", android_game)
-              for p in root.rglob("game.js"):
-                  print("Found:", p)
-              raise SystemExit(1)
+          for path in root.rglob("*"):
+              if not path.is_file():
+                  continue
+              if path.suffix.lower() not in {
+                  ".js", ".html", ".xml", ".json", ".gradle",
+                  ".kts", ".java", ".kt", ".properties", ".txt"
+              }:
+                  continue
+              try:
+                  lines = path.read_text(errors="replace").splitlines()
+              except OSError:
+                  continue
+              for number, line in enumerate(lines, 1):
+                  if regex.search(line):
+                      print(f"{path}:{number}: {line[:500]}")
+                      found += 1
 
-          pattern = re.compile(
-              r'if\s*\(\s*state\.open\s*\)\s*'
-              r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
-              r'else\s*screen\s*=\s*["\']home["\']\s*;'
-          )
-
-          replacement = (
-              'if (state.open) { state.open = null; save(); } '
-              'screen = "home";'
-          )
-
-          patched_android = False
-
-          for file in root.rglob("game.js"):
-              content = file.read_text(errors="replace")
-              updated, count = pattern.subn(replacement, content, count=1)
-
-              if count:
-                  file.write_text(updated)
-                  print("PATCHED:", file)
-                  if file == android_game:
-                      patched_android = True
-
-          if not patched_android:
-              print("ERROR: Startup code did not match; no APK was built.")
-              lines = android_game.read_text(errors="replace").splitlines()
-              for i, line in enumerate(lines):
-                  if "resumeIfNeeded" in line or "state.open" in line:
-                      start = max(0, i - 5)
-                      end = min(len(lines), i + 7)
-                      for j in range(start, end):
-                          print(f"{j + 1}: {lines[j]}")
-                      print("---")
-              raise SystemExit(1)
-
-          print("Startup patch verified.")
+          print(f"AdMob inspection complete. Matching lines: {found}")
           PY
 
       - name: Set up Java 17
@@ -105,10 +90,7 @@ jobs:
           gradle-version: "8.13"
 
       - name: Build debug APK
-        shell: bash
-        run: |
-          set -eu
-          gradle -p extracted/Feloos/android assembleDebug
+        run: gradle -p extracted/Feloos/android assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
