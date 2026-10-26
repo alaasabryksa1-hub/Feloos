@@ -26,15 +26,52 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "ERROR: Project ZIP not found."
-            echo "Files in repository:"
-            find . -maxdepth 2 -type f | sort
+            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
           unzip -q "$ZIP_FILE" -d extracted
 
           echo "Android project files:"
-          find extracted -name build.gradle -o -name build.gradle.kts -o -name AndroidManifest.xml
+          find extracted \( -name build.gradle -o -name build.gradle.kts -o -name AndroidManifest.xml \) -print
+
+      - name: Inspect game startup logic
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("extracted")
+          terms = re.compile(
+              r"resumeIfNeeded|onboarded|signedOut|"
+              r"screen\s*=|localStorage|sessionStorage|"
+              r"DOMContentLoaded|function\s+init|function\s+start",
+              re.I
+          )
+
+          files = list(root.rglob("game.js"))
+          if not files:
+              print("ERROR: game.js was not found in extracted ZIP")
+              raise SystemExit(1)
+
+          for file in files:
+              lines = file.read_text(errors="replace").splitlines()
+              hits = [
+                  i for i, line in enumerate(lines)
+                  if terms.search(line)
+              ]
+
+              print(f"\n===== {file} =====")
+              shown = set()
+
+              for i in hits:
+                  for j in range(max(0, i - 3), min(len(lines), i + 5)):
+                      if j not in shown:
+                          print(f"{j + 1}: {lines[j]}")
+                          shown.add(j)
+                  print("---")
+          PY
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
