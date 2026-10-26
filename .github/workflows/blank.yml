@@ -22,20 +22,10 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ZIP_FILE="Feloos-diverse-1000-questions.zip"
-          test -f "$ZIP_FILE" || {
-            echo "ERROR: Project ZIP not found"
-            exit 1
-          }
-          unzip -q "$ZIP_FILE" -d extracted
-          PROJECT_DIR="extracted/Feloos/android"
-          test -f "$PROJECT_DIR/settings.gradle" -o \
-               -f "$PROJECT_DIR/settings.gradle.kts" || {
-            echo "ERROR: Android project not found"
-            exit 1
-          }
+          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+          test -f extracted/Feloos/android/app/build.gradle.kts
 
-      - name: Inspect AdMob configuration
+      - name: Fix AdMob IDs and restore home startup
         shell: bash
         run: |
           set -eu
@@ -44,38 +34,69 @@ jobs:
           import re
 
           root = Path("extracted/Feloos")
-          patterns = [
-              r"ca-app-pub-\d{16,20}[~/]\d{8,12}",
-              r"3940256099942544",
-              r"testDevices",
-              r"setTestDeviceIds",
-              r"addTestDevice",
-              r"MobileAds\.initialize",
-              r"RequestConfiguration",
-              r"test.?ad",
-              r"AdRequest",
-          ]
-          regex = re.compile("|".join(patterns), re.I)
-          found = 0
+          gradle_file = root / "android/app/build.gradle.kts"
+          controller = root / "android/app/src/main/java/com/feloos/quiz/RewardedInterstitialController.kt"
+          game = root / "android/app/src/main/assets/www/game.js"
 
-          for path in root.rglob("*"):
-              if not path.is_file():
-                  continue
-              if path.suffix.lower() not in {
-                  ".js", ".html", ".xml", ".json", ".gradle",
-                  ".kts", ".java", ".kt", ".properties", ".txt"
-              }:
-                  continue
-              try:
-                  lines = path.read_text(errors="replace").splitlines()
-              except OSError:
-                  continue
-              for number, line in enumerate(lines, 1):
-                  if regex.search(line):
-                      print(f"{path}:{number}: {line[:500]}")
-                      found += 1
+          for p in (gradle_file, controller, game):
+              if not p.is_file():
+                  raise SystemExit(f"Missing required file: {p}")
 
-          print(f"AdMob inspection complete. Matching lines: {found}")
+          replacements = {
+              "ca-app-pub-3940256099942544~3347511713":
+                  "ca-app-pub-6809664188772391~4277962751",
+              "ca-app-pub-3940256099942544/5354046379":
+                  "ca-app-pub-6809664188772391/9067340729",
+              "ca-app-pub-3940256099942544/9257395921":
+                  "ca-app-pub-6809664188772391/8952412776",
+              "ca-app-pub-3940256099942544/2247696110":
+                  "ca-app-pub-6809664188772391/2226600206",
+          }
+
+          text = gradle_file.read_text()
+          for old, new in replacements.items():
+              text = text.replace(old, new)
+          gradle_file.write_text(text)
+
+          text = controller.read_text()
+          text = text.replace(
+              "ca-app-pub-3940256099942544/5354046379",
+              "ca-app-pub-6809664188772391/9067340729"
+          )
+          controller.write_text(text)
+
+          # Restore the previously used home-screen startup fix.
+          pattern = re.compile(
+              r'if\s*\(\s*state\.open\s*\)\s*'
+              r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
+              r'else\s*screen\s*=\s*["\']home["\']\s*;'
+          )
+
+          patched = False
+          for p in root.rglob("game.js"):
+              source = p.read_text(errors="replace")
+              updated, count = pattern.subn(
+                  'if (state.open) { state.open = null; save(); } '
+                  'screen = "home";',
+                  source,
+                  count=1
+              )
+              if count:
+                  p.write_text(updated)
+                  print("Startup fixed:", p)
+                  if p == game:
+                      patched = True
+
+          if not patched:
+              raise SystemExit(
+                  "Startup pattern was not found in Android game.js; "
+                  "stopping to avoid building an unverified startup."
+              )
+
+          if "ca-app-pub-3940256099942544" in gradle_file.read_text():
+              raise SystemExit("Test IDs remain in build.gradle.kts")
+
+          print("AdMob configuration and startup checks passed.")
           PY
 
       - name: Set up Java 17
