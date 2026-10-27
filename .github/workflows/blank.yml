@@ -24,7 +24,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Extract new Feloos project
+      - name: Extract Feloos project
         shell: bash
         run: |
           set -euo pipefail
@@ -32,7 +32,7 @@ jobs:
           ZIP="Feloos-ads-implementation.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Missing project ZIP: $ZIP"
+            echo "::error::Missing $ZIP"
             exit 1
           fi
 
@@ -42,8 +42,7 @@ jobs:
           GRADLE_FILE="$(find extracted -type f \( -name build.gradle.kts -o -name build.gradle \) -path '*/app/*' | head -n 1)"
 
           if [ -z "$GRADLE_FILE" ]; then
-            echo "::error::Could not find app Gradle file"
-            find extracted -maxdepth 5 -type f | head -n 100
+            echo "::error::App Gradle file not found"
             exit 1
           fi
 
@@ -56,11 +55,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1 || true)"
-          fi
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
 
           if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
             echo "::error::Android sdkmanager not found"
@@ -69,6 +64,72 @@ jobs:
 
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fix interstitial imports and verify Ads dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAIN="$ANDROID_DIR/app/src/main/java/com/feloos/quiz/MainActivity.kt"
+          GRADLE_KTS="$ANDROID_DIR/app/build.gradle.kts"
+          GRADLE_GROOVY="$ANDROID_DIR/app/build.gradle"
+
+          if [ ! -f "$MAIN" ]; then
+            echo "::error::MainActivity.kt not found at expected path"
+            find "$ANDROID_DIR/app/src/main" -name MainActivity.kt
+            exit 1
+          fi
+
+          python3 - "$MAIN" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          source = path.read_text()
+
+          source = re.sub(
+              r'(?m)^import\s+[\w.]+\.InterstitialAdLoadCallback\s*\n?',
+              '',
+              source
+          )
+          source = re.sub(
+              r'(?m)^import\s+[\w.]+\.InterstitialAd\s*\n?',
+              '',
+              source
+          )
+
+          package_match = re.search(r'(?m)^package\s+[\w.]+\s*$', source)
+          if not package_match:
+              raise SystemExit("Could not find Kotlin package declaration")
+
+          imports = (
+              "\nimport com.google.android.gms.ads.interstitial.InterstitialAd"
+              "\nimport com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback\n"
+          )
+
+          insert_at = package_match.end()
+          source = source[:insert_at] + imports + source[insert_at:]
+          path.write_text(source)
+          print("Correct interstitial imports inserted.")
+          PY
+
+          if [ -f "$GRADLE_KTS" ]; then
+            GRADLE_FILE="$GRADLE_KTS"
+          elif [ -f "$GRADLE_GROOVY" ]; then
+            GRADLE_FILE="$GRADLE_GROOVY"
+          else
+            echo "::error::App Gradle build file not found"
+            exit 1
+          fi
+
+          if ! grep -q 'com.google.android.gms:play-services-ads' "$GRADLE_FILE"; then
+            echo "::error::Google Mobile Ads SDK dependency is missing from $GRADLE_FILE"
+            echo "The dependency must be added to the app dependencies block before building."
+            exit 1
+          fi
+
+          echo "Google Mobile Ads SDK dependency found."
 
       - name: Build APK
         shell: bash
@@ -87,15 +148,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/gradle"
             unzip -q -o "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle"
 
-            GRADLE_BIN="$RUNNER_TEMP/gradle/gradle-8.13/bin/gradle"
-
-            if [ ! -x "$GRADLE_BIN" ]; then
-              echo "::error::Gradle executable not found after extraction"
-              find "$RUNNER_TEMP/gradle" -maxdepth 4 -type f | head -n 50
-              exit 1
-            fi
-
-            "$GRADLE_BIN" --no-daemon assembleDebug
+            "$RUNNER_TEMP/gradle/gradle-8.13/bin/gradle" --no-daemon assembleDebug
           fi
 
       - name: Upload APK
@@ -104,3 +157,4 @@ jobs:
           name: Feloos-debug-APK
           path: ${{ env.ANDROID_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
