@@ -1,5 +1,5 @@
 
-name: Build Feloos Android
+name: Feloos Android Build
 
 on:
   workflow_dispatch:
@@ -18,29 +18,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
-        shell: bash
-        run: |
-          set -eu
-          unzip -q Feloos-diverse-1000-questions.zip -d extracted
-          test -f extracted/Feloos/android/app/build.gradle.kts
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-      - name: Fix AdMob IDs and restore home startup
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Extract project
         shell: bash
         run: |
-          set -eu
-          python3 - <<'PY'
+          set -euo pipefail
+          ZIP_FILE="$(find . -maxdepth 3 -type f -name 'Feloos-diverse-1000-questions.zip' -print -quit)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Project ZIP was not found."
+            exit 1
+          fi
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+          echo "Project extracted successfully."
+
+      - name: Replace AdMob test IDs and fix startup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
           from pathlib import Path
           import re
+          import sys
 
-          root = Path("extracted/Feloos")
-          gradle_file = root / "android/app/build.gradle.kts"
-          controller = root / "android/app/src/main/java/com/feloos/quiz/RewardedInterstitialController.kt"
-          game = root / "android/app/src/main/assets/www/game.js"
-
-          for p in (gradle_file, controller, game):
-              if not p.is_file():
-                  raise SystemExit(f"Missing required file: {p}")
+          base = Path("extracted")
 
           replacements = {
               "ca-app-pub-3940256099942544~3347511713":
@@ -53,69 +63,86 @@ jobs:
                   "ca-app-pub-6809664188772391/2226600206",
           }
 
-          text = gradle_file.read_text()
-          for old, new in replacements.items():
-              text = text.replace(old, new)
-          gradle_file.write_text(text)
+          changed_files = 0
+          for path in base.rglob("*"):
+              if not path.is_file() or path.suffix.lower() in {
+                  ".zip", ".png", ".jpg", ".jpeg", ".webp",
+                  ".gif", ".so", ".jar", ".class", ".apk"
+              }:
+                  continue
 
-          text = controller.read_text()
-          text = text.replace(
-              "ca-app-pub-3940256099942544/5354046379",
-              "ca-app-pub-6809664188772391/9067340729"
-          )
-          controller.write_text(text)
+              try:
+                  original = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
 
-          # Restore the previously used home-screen startup fix.
-          pattern = re.compile(
+              updated = original
+              for old, new in replacements.items():
+                  updated = updated.replace(old, new)
+
+              if updated != original:
+                  path.write_text(updated, encoding="utf-8")
+                  changed_files += 1
+
+          print(f"AdMob ID replacement completed. Files changed: {changed_files}")
+
+          game_files = list(base.rglob("game.js"))
+          if not game_files:
+              sys.exit("ERROR: game.js was not found in the extracted project.")
+
+          startup_pattern = re.compile(
               r'if\s*\(\s*state\.open\s*\)\s*'
               r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
-              r'else\s*screen\s*=\s*["\']home["\']\s*;'
+              r'else\s*screen\s*=\s*["\']home["\']\s*;',
+              re.MULTILINE
           )
 
           patched = False
-          for p in root.rglob("game.js"):
-              source = p.read_text(errors="replace")
-              updated, count = pattern.subn(
+          for game_file in game_files:
+              source = game_file.read_text(encoding="utf-8")
+              updated, count = startup_pattern.subn(
                   'if (state.open) { state.open = null; save(); } '
                   'screen = "home";',
                   source,
                   count=1
               )
               if count:
-                  p.write_text(updated)
-                  print("Startup fixed:", p)
-                  if p == game:
-                      patched = True
+                  game_file.write_text(updated, encoding="utf-8")
+                  print(f"Startup fix applied to: {game_file}")
+                  patched = True
+                  break
 
           if not patched:
-              raise SystemExit(
-                  "Startup pattern was not found in Android game.js; "
-                  "stopping to avoid building an unverified startup."
+              sys.exit(
+                  "ERROR: Expected startup code was not found. "
+                  "Build stopped to avoid producing an unverified APK."
               )
-
-          if "ca-app-pub-3940256099942544" in gradle_file.read_text():
-              raise SystemExit("Test IDs remain in build.gradle.kts")
-
-          print("AdMob configuration and startup checks passed.")
           PY
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
+      - name: Locate Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: Gradle wrapper (gradlew) was not found."
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          chmod +x "$GRADLEW"
+          echo "Gradle project: $PROJECT_DIR"
 
       - name: Build debug APK
-        run: gradle -p extracted/Feloos/android assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Upload debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Feloos-debug-apk
-          path: extracted/Feloos/android/app/build/outputs/apk/debug/*.apk
+          name: Feloos-debug-APK
+          path: extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
