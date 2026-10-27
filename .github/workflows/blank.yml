@@ -55,10 +55,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1 || true)"
           fi
 
           if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
@@ -75,15 +76,26 @@ jobs:
           set -euo pipefail
           cd "$ANDROID_DIR"
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
             ./gradlew --no-daemon assembleDebug
           else
-            gradle --version >/dev/null 2>&1 || {
-              curl -fsSL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o /tmp/gradle.zip
-              unzip -q /tmp/gradle.zip -d /tmp
-            }
-            /tmp/gradle-8.13/bin/gradle --no-daemon assembleDebug
+            curl -fL --retry 3 \
+              https://services.gradle.org/distributions/gradle-8.13-bin.zip \
+              -o "$RUNNER_TEMP/gradle.zip"
+
+            mkdir -p "$RUNNER_TEMP/gradle"
+            unzip -q -o "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle"
+
+            GRADLE_BIN="$RUNNER_TEMP/gradle/gradle-8.13/bin/gradle"
+
+            if [ ! -x "$GRADLE_BIN" ]; then
+              echo "::error::Gradle executable not found after extraction"
+              find "$RUNNER_TEMP/gradle" -maxdepth 4 -type f | head -n 50
+              exit 1
+            fi
+
+            "$GRADLE_BIN" --no-daemon assembleDebug
           fi
 
       - name: Upload APK
