@@ -1,4 +1,3 @@
-
 name: Feloos Android Build
 
 on:
@@ -6,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - master
 
 permissions:
   contents: read
@@ -24,137 +24,80 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check source ZIP
+        shell: bash
+        run: |
+          set -e
+          if [ -f "Feloos-ad-review-fixes.zip" ]; then
+            ZIP_FILE="Feloos-ad-review-fixes.zip"
+          elif [ -f "Feloos-ads-implementation.zip" ]; then
+            ZIP_FILE="Feloos-ads-implementation.zip"
+          else
+            echo "ERROR: Source ZIP not found in repository root."
+            echo "Upload Feloos-ad-review-fixes.zip or Feloos-ads-implementation.zip"
+            exit 1
+          fi
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
       - name: Extract Feloos project
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
+          mkdir -p /tmp/feloos-source
+          unzip -q "$ZIP_FILE" -d /tmp/feloos-source
 
-          ZIP="Feloos-ads-implementation.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::Missing $ZIP"
-            exit 1
-          fi
-
-          mkdir -p extracted
-          unzip -q -o "$ZIP" -d extracted
-
-          GRADLE_FILE="$(find extracted -type f \( -name build.gradle.kts -o -name build.gradle \) -path '*/app/*' | head -n 1)"
-
-          if [ -z "$GRADLE_FILE" ]; then
-            echo "::error::App Gradle file not found"
-            exit 1
-          fi
-
-          ANDROID_DIR="${GRADLE_FILE%/app/*}"
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $ANDROID_DIR"
-
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
-
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "::error::Android sdkmanager not found"
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Fix interstitial imports and verify Ads dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MAIN="$ANDROID_DIR/app/src/main/java/com/feloos/quiz/MainActivity.kt"
-          GRADLE_KTS="$ANDROID_DIR/app/build.gradle.kts"
-          GRADLE_GROOVY="$ANDROID_DIR/app/build.gradle"
-
-          if [ ! -f "$MAIN" ]; then
-            echo "::error::MainActivity.kt not found at expected path"
-            find "$ANDROID_DIR/app/src/main" -name MainActivity.kt
-            exit 1
-          fi
-
-          python3 - "$MAIN" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          path = pathlib.Path(sys.argv[1])
-          source = path.read_text()
-
-          source = re.sub(
-              r'(?m)^import\s+[\w.]+\.InterstitialAdLoadCallback\s*\n?',
-              '',
-              source
-          )
-          source = re.sub(
-              r'(?m)^import\s+[\w.]+\.InterstitialAd\s*\n?',
-              '',
-              source
-          )
-
-          package_match = re.search(r'(?m)^package\s+[\w.]+\s*$', source)
-          if not package_match:
-              raise SystemExit("Could not find Kotlin package declaration")
-
-          imports = (
-              "\nimport com.google.android.gms.ads.interstitial.InterstitialAd"
-              "\nimport com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback\n"
-          )
-
-          insert_at = package_match.end()
-          source = source[:insert_at] + imports + source[insert_at:]
-          path.write_text(source)
-          print("Correct interstitial imports inserted.")
-          PY
-
-          if [ -f "$GRADLE_KTS" ]; then
-            GRADLE_FILE="$GRADLE_KTS"
-          elif [ -f "$GRADLE_GROOVY" ]; then
-            GRADLE_FILE="$GRADLE_GROOVY"
+          if [ -d "/tmp/feloos-source/Feloos" ]; then
+            cp -a /tmp/feloos-source/Feloos/. .
+          elif [ -f "/tmp/feloos-source/android/settings.gradle" ] || \
+               [ -f "/tmp/feloos-source/android/settings.gradle.kts" ]; then
+            cp -a /tmp/feloos-source/. .
           else
-            echo "::error::App Gradle build file not found"
+            echo "ERROR: Could not find the Feloos Android project inside ZIP."
+            find /tmp/feloos-source -maxdepth 3 -type f | head -80
             exit 1
           fi
 
-          if ! grep -q 'com.google.android.gms:play-services-ads' "$GRADLE_FILE"; then
-            echo "::error::Google Mobile Ads SDK dependency is missing from $GRADLE_FILE"
-            echo "The dependency must be added to the app dependencies block before building."
-            exit 1
-          fi
-
-          echo "Google Mobile Ads SDK dependency found."
-
-      - name: Build APK
+      - name: Verify Android project
         shell: bash
         run: |
-          set -euo pipefail
-          cd "$ANDROID_DIR"
+          set -e
+          test -d android
+          test -f android/app/build.gradle.kts -o \
+               -f android/app/build.gradle
+          test -f android/gradlew || \
+               echo "Gradle wrapper not found; using installed Gradle."
 
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew --no-daemon assembleDebug
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Validate game files if checker exists
+        shell: bash
+        run: |
+          if [ -f scripts/check-game.mjs ]; then
+            node scripts/check-game.mjs
           else
-            curl -fL --retry 3 \
-              https://services.gradle.org/distributions/gradle-8.13-bin.zip \
-              -o "$RUNNER_TEMP/gradle.zip"
-
-            mkdir -p "$RUNNER_TEMP/gradle"
-            unzip -q -o "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle"
-
-            "$RUNNER_TEMP/gradle/gradle-8.13/bin/gradle" --no-daemon assembleDebug
+            echo "No game checker script found; continuing."
           fi
 
-      - name: Upload APK
+      - name: Build APK and AAB
+        shell: bash
+        run: |
+          set -e
+          gradle -p android assembleDebug bundleRelease
+
+      - name: Upload APK and AAB
         uses: actions/upload-artifact@v4
         with:
-          name: Feloos-debug-APK
-          path: ${{ env.ANDROID_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: Feloos-Android-Build
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
-
+          retention-days: 14
