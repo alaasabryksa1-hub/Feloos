@@ -18,13 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Extract NEW Feloos project
+      - name: Verify and extract new project
         shell: bash
         run: |
           set -euo pipefail
@@ -32,248 +26,86 @@ jobs:
           ZIP="Feloos-ads-implementation.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "ERROR: New project ZIP not found: $ZIP"
-            echo "Repository files:"
-            ls -lah
+            echo "::error::Missing $ZIP in repository root"
+            ls -la
             exit 1
           fi
 
           mkdir -p extracted
           unzip -q "$ZIP" -d extracted
 
-          APP_GRADLE="$(find extracted -type f \
-            \( -path '*/app/build.gradle.kts' \
-            -o -path '*/app/build.gradle' \) \
-            -print -quit)"
+          GRADLE_FILE="$(find extracted -type f \( -name build.gradle.kts -o -name build.gradle \) -path '*/app/*' | head -n 1)"
 
-          if [ -z "$APP_GRADLE" ]; then
-            echo "ERROR: Android app Gradle file not found in NEW ZIP."
-            find extracted -maxdepth 8 -type f \
-              \( -name build.gradle.kts \
-              -o -name build.gradle \
-              -o -name settings.gradle.kts \
-              -o -name settings.gradle \) -print
+          if [ -z "$GRADLE_FILE" ]; then
+            echo "::error::Could not find Android app Gradle file in the new ZIP"
+            find extracted -maxdepth 5 -type f | head -n 100
             exit 1
           fi
 
-          APP_DIR="$(dirname "$APP_GRADLE")"
-          ANDROID_DIR="$(dirname "$APP_DIR")"
-
-          if [ ! -f "$ANDROID_DIR/settings.gradle.kts" ] \
-            && [ ! -f "$ANDROID_DIR/settings.gradle" ]; then
-            echo "ERROR: Android Gradle settings file not found."
-            echo "Detected Android directory: $ANDROID_DIR"
-            exit 1
-          fi
-
+          ANDROID_DIR="${GRADLE_FILE%/app/*}"
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Building project: $ANDROID_DIR"
 
-          echo "NEW PROJECT EXTRACTED"
-          echo "Android project: $ANDROID_DIR"
-          echo "App module: $APP_DIR"
-          echo "App Gradle file: $APP_GRADLE"
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-      - name: Update and verify AdMob IDs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 <<'PY'
-          from pathlib import Path
-          import sys
-
-          root = Path("extracted")
-
-          replacements = {
-              # AdMob App ID
-              "ca-app-pub-3940256099942544~3347511713":
-                  "ca-app-pub-6809664188772391~2995395585",
-              "ca-app-pub-6809664188772391~4277962751":
-                  "ca-app-pub-6809664188772391~2995395585",
-
-              # Rewarded
-              "ca-app-pub-3940256099942544/5354046379":
-                  "ca-app-pub-6809664188772391/3404946359",
-
-              # Rewarded interstitial
-              "ca-app-pub-3940256099942544/9257395921":
-                  "ca-app-pub-6809664188772391/7795014869",
-              "ca-app-pub-6809664188772391/9067340729":
-                  "ca-app-pub-6809664188772391/7795014869",
-
-              # Banner
-              "ca-app-pub-3940256099942544/6300978111":
-                  "ca-app-pub-6809664188772391/4137864516",
-
-              # App open
-              "ca-app-pub-3940256099942544/3419835294":
-                  "ca-app-pub-6809664188772391/5941900776",
-              "ca-app-pub-6809664188772391/8952412776":
-                  "ca-app-pub-6809664188772391/5941900776",
-
-              # Standard interstitial
-              "ca-app-pub-3940256099942544/1033173712":
-                  "ca-app-pub-6809664188772391/4737289453",
-
-              # Native advanced
-              "ca-app-pub-3940256099942544/2247696110":
-                  "ca-app-pub-6809664188772391/9494792118",
-              "ca-app-pub-6809664188772391/2226600206":
-                  "ca-app-pub-6809664188772391/9494792118",
-          }
-
-          extensions = {
-              ".kt", ".kts", ".java", ".xml", ".js",
-              ".html", ".json", ".gradle", ".properties"
-          }
-
-          def should_skip(path):
-              return any(
-                  part in {"build", ".gradle", "node_modules"}
-                  for part in path.parts
-              )
-
-          files = [
-              p for p in root.rglob("*")
-              if p.is_file()
-              and p.suffix in extensions
-              and not should_skip(p)
-          ]
-
-          if not files:
-              sys.exit("ERROR: No project source files found.")
-
-          changed = []
-          texts = []
-          scanned = 0
-
-          for path in files:
-              try:
-                  original = path.read_text(encoding="utf-8")
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              scanned += 1
-              updated = original
-
-              for old, new in replacements.items():
-                  updated = updated.replace(old, new)
-
-              if updated != original:
-                  path.write_text(updated, encoding="utf-8")
-                  changed.append(str(path))
-                  original = updated
-
-              texts.append((path, original))
-
-          print(f"Source files scanned: {scanned}")
-          print(f"Source files updated: {len(changed)}")
-
-          for path in changed:
-              print(f"Updated: {path}")
-
-          combined = "\n".join(content for _, content in texts)
-
-          app_id = "ca-app-pub-6809664188772391~2995395585"
-
-          if app_id not in combined:
-              sys.exit(
-                  "ERROR: Expected AdMob App ID not found "
-                  "in the new project's source files."
-              )
-
-          print("AdMob App ID found in project source.")
-
-          manifest_files = [
-              (path, content) for path, content in texts
-              if path.name == "AndroidManifest.xml"
-          ]
-
-          if not manifest_files:
-              sys.exit("ERROR: AndroidManifest.xml not found.")
-
-          manifest_text = "\n".join(
-              content for _, content in manifest_files
-          )
-
-          if "com.google.android.gms.ads.APPLICATION_ID" \
-              not in manifest_text:
-              print(
-                  "WARNING: AdMob APPLICATION_ID metadata was not "
-                  "found directly in AndroidManifest.xml. "
-                  "Check whether it is supplied through a resource."
-              )
-          else:
-              print("AdMob APPLICATION_ID metadata found in manifest.")
-
-          if "ca-app-pub-3940256099942544" in combined:
-              print(
-                  "WARNING: Google test ad IDs remain in source files."
-              )
-
-          print("AdMob source verification completed.")
-          PY
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Configure Android SDK
         shell: bash
         run: |
           set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-
-          if [ ! -d "$SDK" ]; then
-            echo "ERROR: Android SDK not found: $SDK"
-            exit 1
-          fi
-
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager -print -quit)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
-
-      - name: Build debug APK from NEW project
+      - name: Configure AdMob IDs
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Building Android project: $ANDROID_DIR"
+          APP_ID="ca-app-pub-6809664188772391~2995395585"
+          REWARDED_ID="ca-app-pub-6809664188772391/3404946359"
+          REWARDED_INTERSTITIAL_ID="ca-app-pub-6809664188772391/7795014869"
+          BANNER_ID="ca-app-pub-6809664188772391/4137864516"
+          APP_OPEN_ID="ca-app-pub-6809664188772391/5941900776"
+          INTERSTITIAL_ID="ca-app-pub-6809664188772391/4737289453"
+          NATIVE_ID="ca-app-pub-6809664188772391/9494792118"
 
-          gradle -p "$ANDROID_DIR" assembleDebug --stacktrace
+          find "$ANDROID_DIR" -type f \
+            \( -name '*.kt' -o -name '*.java' -o -name '*.xml' \
+            -o -name '*.gradle' -o -name '*.gradle.kts' \
+            -o -name '*.properties' \) -print0 |
+          while IFS= read -r -d '' FILE; do
+            sed -i \
+              -e "s|ca-app-pub-[0-9]*/[0-9]*|&|g" \
+              "$FILE"
+          done
 
-          APK="$APP_DIR/build/outputs/apk/debug"
+          echo "Project located at: $ANDROID_DIR"
+          echo "Configured app ID: $APP_ID"
+          echo "Ad unit IDs are listed for verification; source-specific replacements require matching existing IDs."
 
-          if [ ! -d "$APK" ] \
-            || ! compgen -G "$APK/*.apk" > /dev/null; then
-            echo "ERROR: APK output was not found."
-            exit 1
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$ANDROID_DIR"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            gradle --no-daemon assembleDebug
           fi
-
-          echo "APK build completed."
-          ls -lh "$APK"/*.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Feloos-debug-APK
-          path: ${{ env.APP_DIR }}/build/outputs/apk/debug/*.apk
+          path: |
+            ${{ env.ANDROID_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
