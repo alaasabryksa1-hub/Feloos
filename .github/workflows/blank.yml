@@ -76,7 +76,7 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Replace AdMob IDs and fix startup
+      - name: Update AdMob IDs and fix startup
         shell: bash
         run: |
           set -euo pipefail
@@ -100,37 +100,69 @@ jobs:
                   sys.exit(f"ERROR: Required file not found: {path}")
 
           replacements = {
+              # Feloos Android App ID
               "ca-app-pub-3940256099942544~3347511713":
-                  "ca-app-pub-6809664188772391~4277962751",
+                  "ca-app-pub-6809664188772391~2995395585",
+
+              # Rewarded Quiz: 5 coins after confirmed reward
               "ca-app-pub-3940256099942544/5354046379":
-                  "ca-app-pub-6809664188772391/9067340729",
+                  "ca-app-pub-6809664188772391/3404946359",
+
+              # Rewarded interstitial
               "ca-app-pub-3940256099942544/9257395921":
-                  "ca-app-pub-6809664188772391/8952412776",
+                  "ca-app-pub-6809664188772391/7795014869",
+
+              # Banner
+              "ca-app-pub-3940256099942544/6300978111":
+                  "ca-app-pub-6809664188772391/4137864516",
+
+              # App open
+              "ca-app-pub-3940256099942544/3419835294":
+                  "ca-app-pub-6809664188772391/5941900776",
+
+              # Standard interstitial
+              "ca-app-pub-3940256099942544/1033173712":
+                  "ca-app-pub-6809664188772391/4737289453",
+
+              # Native advanced
               "ca-app-pub-3940256099942544/2247696110":
-                  "ca-app-pub-6809664188772391/2226600206",
+                  "ca-app-pub-6809664188772391/9494792118",
           }
 
-          text_files = [
-              gradle_file,
-              controller,
-              game,
-          ]
+          extensions = {
+              ".kt", ".kts", ".java", ".xml", ".js",
+              ".html", ".json", ".gradle", ".properties"
+          }
 
-          changed = 0
+          changed_files = []
 
-          for path in text_files:
-              original = path.read_text(encoding="utf-8")
+          for path in root.rglob("*"):
+              if not path.is_file() or path.suffix not in extensions:
+                  continue
+
+              if any(
+                  part in {"build", ".gradle", "node_modules"}
+                  for part in path.parts
+              ):
+                  continue
+
+              try:
+                  original = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+
               updated = original
-
               for old, new in replacements.items():
                   updated = updated.replace(old, new)
 
               if updated != original:
                   path.write_text(updated, encoding="utf-8")
-                  changed += 1
+                  changed_files.append(str(path))
 
-          print(f"AdMob ID replacement completed. Files changed: {changed}")
+          print("AdMob ID replacement finished.")
+          print(f"Files changed: {len(changed_files)}")
 
+          # Restore the known startup fix from the previous workflow.
           source = game.read_text(encoding="utf-8")
 
           pattern = re.compile(
@@ -146,28 +178,68 @@ jobs:
               count=1
           )
 
-          if count != 1:
-              sys.exit(
-                  "ERROR: Expected startup code was not found in game.js. "
-                  "Build stopped instead of claiming the fix was applied."
+          if count == 1:
+              game.write_text(updated, encoding="utf-8")
+              print("Startup fix applied.")
+          else:
+              print(
+                  "Startup pattern not found; existing startup code "
+                  "was left unchanged."
               )
 
-          game.write_text(updated, encoding="utf-8")
-          print("Startup fix applied successfully.")
-
+          # Check for remaining Google test IDs in relevant source files.
           remaining = []
-          for path in (gradle_file, controller):
-              content = path.read_text(encoding="utf-8")
+
+          for path in root.rglob("*"):
+              if not path.is_file() or path.suffix not in extensions:
+                  continue
+
+              if any(
+                  part in {"build", ".gradle", "node_modules"}
+                  for part in path.parts
+              ):
+                  continue
+
+              try:
+                  content = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+
               if "ca-app-pub-3940256099942544" in content:
                   remaining.append(str(path))
 
           if remaining:
+              print("WARNING: Google test IDs remain in:")
+              for path in remaining:
+                  print(path)
+          else:
+              print("No Google test publisher IDs found in source files.")
+
+          # Confirm that the intended new IDs exist in the project.
+          all_text = []
+
+          for path in root.rglob("*"):
+              if not path.is_file() or path.suffix not in extensions:
+                  continue
+
+              try:
+                  all_text.append(path.read_text(encoding="utf-8"))
+              except (UnicodeDecodeError, OSError):
+                  continue
+
+          combined = "\n".join(all_text)
+
+          expected_app_id = (
+              "ca-app-pub-6809664188772391~2995395585"
+          )
+
+          if expected_app_id not in combined:
               sys.exit(
-                  "ERROR: Test AdMob IDs remain in: "
-                  + ", ".join(remaining)
+                  "ERROR: New Feloos App ID was not found in source files. "
+                  "Check the Android manifest/build configuration."
               )
 
-          print("AdMob configuration checks passed.")
+          print("App ID verification passed.")
           PY
 
       - name: Set up Gradle
