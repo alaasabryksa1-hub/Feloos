@@ -1,4 +1,3 @@
-
 name: Feloos Android Build
 
 on:
@@ -29,87 +28,51 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ ! -f "Feloos-diverse-1000-questions.zip" ]; then
-            echo "ERROR: Project ZIP was not found in repository root."
+          ZIP="Feloos-diverse-1000-questions.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: Project ZIP not found: $ZIP"
+            ls -la
             exit 1
           fi
 
           mkdir -p extracted
-          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+          unzip -q "$ZIP" -d extracted
 
           if [ ! -f "extracted/Feloos/android/app/build.gradle.kts" ]; then
-            echo "ERROR: Android project was not found at the expected path."
-            find extracted -maxdepth 5 -name build.gradle.kts -print
+            echo "ERROR: Android project not found at expected path."
+            find extracted -maxdepth 7 -name build.gradle.kts -print
             exit 1
           fi
 
           echo "Project ZIP extracted successfully."
 
-      - name: Configure Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-
-          if [ ! -d "$SDK" ]; then
-            echo "ERROR: Android SDK not found at $SDK"
-            exit 1
-          fi
-
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager -print -quit)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager was not found."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Update AdMob IDs and fix startup
+      - name: Update AdMob IDs
         shell: bash
         run: |
           set -euo pipefail
 
           python3 <<'PY'
           from pathlib import Path
-          import re
           import sys
 
           root = Path("extracted/Feloos")
 
-          gradle_file = root / "android/app/build.gradle.kts"
-          controller = root / (
-              "android/app/src/main/java/com/feloos/quiz/"
-              "RewardedInterstitialController.kt"
-          )
-          game = root / "android/app/src/main/assets/www/game.js"
-
-          for path in (gradle_file, controller, game):
-              if not path.is_file():
-                  sys.exit(f"ERROR: Required file not found: {path}")
-
           replacements = {
-              # Feloos Android App ID
+              # Android App ID: test and previous IDs
               "ca-app-pub-3940256099942544~3347511713":
                   "ca-app-pub-6809664188772391~2995395585",
+              "ca-app-pub-6809664188772391~4277962751":
+                  "ca-app-pub-6809664188772391~2995395585",
 
-              # Rewarded Quiz: 5 coins after confirmed reward
+              # Rewarded ad
               "ca-app-pub-3940256099942544/5354046379":
                   "ca-app-pub-6809664188772391/3404946359",
 
               # Rewarded interstitial
               "ca-app-pub-3940256099942544/9257395921":
+                  "ca-app-pub-6809664188772391/7795014869",
+              "ca-app-pub-6809664188772391/9067340729":
                   "ca-app-pub-6809664188772391/7795014869",
 
               # Banner
@@ -119,6 +82,8 @@ jobs:
               # App open
               "ca-app-pub-3940256099942544/3419835294":
                   "ca-app-pub-6809664188772391/5941900776",
+              "ca-app-pub-6809664188772391/8952412776":
+                  "ca-app-pub-6809664188772391/5941900776",
 
               # Standard interstitial
               "ca-app-pub-3940256099942544/1033173712":
@@ -127,6 +92,8 @@ jobs:
               # Native advanced
               "ca-app-pub-3940256099942544/2247696110":
                   "ca-app-pub-6809664188772391/9494792118",
+              "ca-app-pub-6809664188772391/2226600206":
+                  "ca-app-pub-6809664188772391/9494792118",
           }
 
           extensions = {
@@ -134,7 +101,8 @@ jobs:
               ".html", ".json", ".gradle", ".properties"
           }
 
-          changed_files = []
+          changed = []
+          scanned = 0
 
           for path in root.rglob("*"):
               if not path.is_file() or path.suffix not in extensions:
@@ -151,44 +119,26 @@ jobs:
               except (UnicodeDecodeError, OSError):
                   continue
 
+              scanned += 1
               updated = original
+
               for old, new in replacements.items():
                   updated = updated.replace(old, new)
 
               if updated != original:
                   path.write_text(updated, encoding="utf-8")
-                  changed_files.append(str(path))
+                  changed.append(str(path))
 
-          print("AdMob ID replacement finished.")
-          print(f"Files changed: {len(changed_files)}")
+          print(f"Source files scanned: {scanned}")
+          print(f"Source files updated: {len(changed)}")
 
-          # Restore the known startup fix from the previous workflow.
-          source = game.read_text(encoding="utf-8")
+          for path in changed:
+              print(f"Updated: {path}")
 
-          pattern = re.compile(
-              r'if\s*\(\s*state\.open\s*\)\s*'
-              r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
-              r'else\s*screen\s*=\s*["\']home["\']\s*;'
-          )
+          if not scanned:
+              sys.exit("ERROR: No source files were scanned.")
 
-          updated, count = pattern.subn(
-              'if (state.open) { state.open = null; save(); } '
-              'screen = "home";',
-              source,
-              count=1
-          )
-
-          if count == 1:
-              game.write_text(updated, encoding="utf-8")
-              print("Startup fix applied.")
-          else:
-              print(
-                  "Startup pattern not found; existing startup code "
-                  "was left unchanged."
-              )
-
-          # Check for remaining Google test IDs in relevant source files.
-          remaining = []
+          all_text = []
 
           for path in root.rglob("*"):
               if not path.is_file() or path.suffix not in extensions:
@@ -201,46 +151,58 @@ jobs:
                   continue
 
               try:
-                  content = path.read_text(encoding="utf-8")
-              except (UnicodeDecodeError, OSError):
-                  continue
-
-              if "ca-app-pub-3940256099942544" in content:
-                  remaining.append(str(path))
-
-          if remaining:
-              print("WARNING: Google test IDs remain in:")
-              for path in remaining:
-                  print(path)
-          else:
-              print("No Google test publisher IDs found in source files.")
-
-          # Confirm that the intended new IDs exist in the project.
-          all_text = []
-
-          for path in root.rglob("*"):
-              if not path.is_file() or path.suffix not in extensions:
-                  continue
-
-              try:
                   all_text.append(path.read_text(encoding="utf-8"))
               except (UnicodeDecodeError, OSError):
-                  continue
+                  pass
 
           combined = "\n".join(all_text)
 
-          expected_app_id = (
-              "ca-app-pub-6809664188772391~2995395585"
-          )
+          app_id = "ca-app-pub-6809664188772391~2995395585"
 
-          if expected_app_id not in combined:
+          if app_id not in combined:
               sys.exit(
-                  "ERROR: New Feloos App ID was not found in source files. "
-                  "Check the Android manifest/build configuration."
+                  "ERROR: New AdMob App ID was not found in source files."
               )
 
-          print("App ID verification passed.")
+          if "ca-app-pub-3940256099942544" in combined:
+              print(
+                  "WARNING: Some Google test IDs remain; "
+                  "review the source before publishing."
+              )
+
+          print("AdMob App ID verification passed.")
           PY
+
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+          if [ ! -d "$SDK" ]; then
+            echo "ERROR: Android SDK not found: $SDK"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
