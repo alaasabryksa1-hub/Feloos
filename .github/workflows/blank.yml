@@ -18,36 +18,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find source ZIP
-        shell: bash
-        run: |
-          set -e
-          if [ -f "Feloos-ad-review-fixes.zip" ]; then
-            echo "ZIP_FILE=Feloos-ad-review-fixes.zip" >> "$GITHUB_ENV"
-          elif [ -f "Feloos-ads-implementation.zip" ]; then
-            echo "ZIP_FILE=Feloos-ads-implementation.zip" >> "$GITHUB_ENV"
-          else
-            echo "ERROR: Feloos source ZIP is missing."
-            exit 1
-          fi
-
-      - name: Extract source
-        shell: bash
-        run: |
-          set -e
-          mkdir -p /tmp/feloos-source
-          unzip -q "$ZIP_FILE" -d /tmp/feloos-source
-
-          if [ -d /tmp/feloos-source/Feloos/android ]; then
-            cp -a /tmp/feloos-source/Feloos/. .
-          elif [ -d /tmp/feloos-source/android ]; then
-            cp -a /tmp/feloos-source/. .
-          else
-            echo "ERROR: Android project not found inside ZIP."
-            find /tmp/feloos-source -maxdepth 4 -type f | head -100
-            exit 1
-          fi
-
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -59,50 +29,117 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
-
-      - name: Check Google Ads dependency and imports
+      - name: Prepare Android project
         shell: bash
         run: |
-          set -e
-          FILE="android/app/src/main/java/com/feloos/quiz/MainActivity.kt"
-          test -f "$FILE"
+          set -euo pipefail
 
-          if ! grep -q 'play-services-ads' android/app/build.gradle.kts; then
-            echo "ERROR: Google Mobile Ads dependency missing."
+          if [ -f "android/gradlew" ] &&
+             [ -f "android/app/build.gradle.kts" ]; then
+            echo "Android project found in repository."
+          else
+            ZIP_FILE=""
+
+            for candidate in \
+              "Feloos-final-review-candidate.zip" \
+              "Feloos-diverse-1000-questions.zip" \
+              "Feloos-ads-implementation.zip" \
+              "Feloos-ad-review-fixes.zip" \
+              "Feloos-source-for-GitHub.zip"; do
+              if [ -f "$candidate" ]; then
+                ZIP_FILE="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: Android project or supported source ZIP not found."
+              echo "Upload the complete source ZIP to the repository root."
+              exit 1
+            fi
+
+            mkdir -p /tmp/feloos-source
+            unzip -oq "$ZIP_FILE" -d /tmp/feloos-source
+
+            if [ -f "/tmp/feloos-source/Feloos/android/gradlew" ]; then
+              cp -a /tmp/feloos-source/Feloos/. .
+            elif [ -f "/tmp/feloos-source/android/gradlew" ]; then
+              cp -a /tmp/feloos-source/. .
+            else
+              echo "ERROR: ZIP does not contain a complete Android project."
+              find /tmp/feloos-source -maxdepth 4 -type f | head -100
+              exit 1
+            fi
+          fi
+
+          test -f android/gradlew
+          test -f android/app/build.gradle.kts
+          test -f android/app/src/main/java/com/feloos/quiz/MainActivity.kt
+          test -f android/app/src/main/java/com/feloos/quiz/RewardedInterstitialController.kt
+
+          chmod +x android/gradlew
+
+      - name: Validate Google Mobile Ads configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLE_FILE="android/app/build.gradle.kts"
+          MAIN_FILE="android/app/src/main/java/com/feloos/quiz/MainActivity.kt"
+          REWARDED_FILE="android/app/src/main/java/com/feloos/quiz/RewardedInterstitialController.kt"
+
+          grep -q 'com.google.android.gms:play-services-ads:' "$GRADLE_FILE" || {
+            echo "ERROR: Google Mobile Ads SDK dependency is missing."
+            exit 1
+          }
+
+          grep -q 'RewardedInterstitialAd' "$REWARDED_FILE" || {
+            echo "ERROR: Rewarded interstitial implementation is missing."
+            exit 1
+          }
+
+          if grep -Eq 'import com\.google\.android\.gms\.ads\.InterstitialAd(LoadCallback)?$' "$MAIN_FILE"; then
+            echo "ERROR: MainActivity contains legacy InterstitialAd imports."
+            echo "Use the reviewed source with RewardedInterstitialController."
             exit 1
           fi
 
-          echo "Google Ads dependency:"
-          grep 'play-services-ads' android/app/build.gradle.kts
+          echo "Google Mobile Ads configuration checks passed."
 
-          echo "Interstitial imports:"
-          grep -n 'InterstitialAd' "$FILE" || true
-
-      - name: Validate game files
+      - name: Validate web game files
         shell: bash
         run: |
-          if [ -f scripts/check-game.mjs ]; then
+          set -euo pipefail
+
+          if [ -f "scripts/check-game.mjs" ]; then
             node scripts/check-game.mjs
           else
-            echo "Game validation script not present; skipping."
+            echo "No game validation script found; continuing."
           fi
 
-      - name: Build APK and AAB
+      - name: Build debug APK and release AAB
         shell: bash
         run: |
-          set -e
-          gradle -p android clean assembleDebug bundleRelease
+          set -euo pipefail
+          cd android
+          ./gradlew --no-daemon clean assembleDebug bundleRelease
+
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          test -f android/app/build/outputs/bundle/release/app-release.aab
+
+          echo "APK and AAB files were generated."
 
       - name: Upload APK and AAB
         uses: actions/upload-artifact@v4
         with:
           name: Feloos-Android-Build
           path: |
-            android/app/build/outputs/apk/debug/*.apk
-            android/app/build/outputs/bundle/release/*.aab
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
