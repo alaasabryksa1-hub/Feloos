@@ -19,32 +19,64 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: yes | sdkmanager --licenses
-
-      - name: Extract project
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="$(find . -maxdepth 3 -type f -name 'Feloos-diverse-1000-questions.zip' -print -quit)"
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP was not found."
+
+          if [ ! -f "Feloos-diverse-1000-questions.zip" ]; then
+            echo "ERROR: Project ZIP was not found in repository root."
             exit 1
           fi
-          mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
-          echo "Project extracted successfully."
 
-      - name: Replace AdMob test IDs and fix startup
+          mkdir -p extracted
+          unzip -q Feloos-diverse-1000-questions.zip -d extracted
+
+          if [ ! -f "extracted/Feloos/android/app/build.gradle.kts" ]; then
+            echo "ERROR: Android project was not found at the expected path."
+            find extracted -maxdepth 5 -name build.gradle.kts -print
+            exit 1
+          fi
+
+          echo "Project ZIP extracted successfully."
+
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+          if [ ! -d "$SDK" ]; then
+            echo "ERROR: Android SDK not found at $SDK"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager was not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Replace AdMob IDs and fix startup
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +86,18 @@ jobs:
           import re
           import sys
 
-          base = Path("extracted")
+          root = Path("extracted/Feloos")
+
+          gradle_file = root / "android/app/build.gradle.kts"
+          controller = root / (
+              "android/app/src/main/java/com/feloos/quiz/"
+              "RewardedInterstitialController.kt"
+          )
+          game = root / "android/app/src/main/assets/www/game.js"
+
+          for path in (gradle_file, controller, game):
+              if not path.is_file():
+                  sys.exit(f"ERROR: Required file not found: {path}")
 
           replacements = {
               "ca-app-pub-3940256099942544~3347511713":
@@ -67,86 +110,80 @@ jobs:
                   "ca-app-pub-6809664188772391/2226600206",
           }
 
-          changed_files = 0
-          for path in base.rglob("*"):
-              if not path.is_file() or path.suffix.lower() in {
-                  ".zip", ".png", ".jpg", ".jpeg", ".webp",
-                  ".gif", ".so", ".jar", ".class", ".apk"
-              }:
-                  continue
+          text_files = [
+              gradle_file,
+              controller,
+              game,
+          ]
 
-              try:
-                  original = path.read_text(encoding="utf-8")
-              except (UnicodeDecodeError, OSError):
-                  continue
+          changed = 0
 
+          for path in text_files:
+              original = path.read_text(encoding="utf-8")
               updated = original
+
               for old, new in replacements.items():
                   updated = updated.replace(old, new)
 
               if updated != original:
                   path.write_text(updated, encoding="utf-8")
-                  changed_files += 1
+                  changed += 1
 
-          print(f"AdMob ID replacement completed. Files changed: {changed_files}")
+          print(f"AdMob ID replacement completed. Files changed: {changed}")
 
-          game_files = list(base.rglob("game.js"))
-          if not game_files:
-              sys.exit("ERROR: game.js was not found in the extracted project.")
+          source = game.read_text(encoding="utf-8")
 
-          startup_pattern = re.compile(
+          pattern = re.compile(
               r'if\s*\(\s*state\.open\s*\)\s*'
               r'resumeIfNeeded\s*\(\s*\)\s*;\s*'
-              r'else\s*screen\s*=\s*["\']home["\']\s*;',
-              re.MULTILINE
+              r'else\s*screen\s*=\s*["\']home["\']\s*;'
           )
 
-          patched = False
-          for game_file in game_files:
-              source = game_file.read_text(encoding="utf-8")
-              updated, count = startup_pattern.subn(
-                  'if (state.open) { state.open = null; save(); } '
-                  'screen = "home";',
-                  source,
-                  count=1
-              )
-              if count:
-                  game_file.write_text(updated, encoding="utf-8")
-                  print(f"Startup fix applied to: {game_file}")
-                  patched = True
-                  break
+          updated, count = pattern.subn(
+              'if (state.open) { state.open = null; save(); } '
+              'screen = "home";',
+              source,
+              count=1
+          )
 
-          if not patched:
+          if count != 1:
               sys.exit(
-                  "ERROR: Expected startup code was not found. "
-                  "Build stopped to avoid producing an unverified APK."
+                  "ERROR: Expected startup code was not found in game.js. "
+                  "Build stopped instead of claiming the fix was applied."
               )
+
+          game.write_text(updated, encoding="utf-8")
+          print("Startup fix applied successfully.")
+
+          remaining = []
+          for path in (gradle_file, controller):
+              content = path.read_text(encoding="utf-8")
+              if "ca-app-pub-3940256099942544" in content:
+                  remaining.append(str(path))
+
+          if remaining:
+              sys.exit(
+                  "ERROR: Test AdMob IDs remain in: "
+                  + ", ".join(remaining)
+              )
+
+          print("AdMob configuration checks passed.")
           PY
 
-      - name: Locate Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
-          if [ -z "$GRADLEW" ]; then
-            echo "ERROR: Gradle wrapper (gradlew) was not found."
-            exit 1
-          fi
-          PROJECT_DIR="$(dirname "$GRADLEW")"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          chmod +x "$GRADLEW"
-          echo "Gradle project: $PROJECT_DIR"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
 
       - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
-          ./gradlew assembleDebug --no-daemon
+          gradle -p extracted/Feloos/android assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Feloos-debug-APK
-          path: extracted/**/build/outputs/apk/debug/*.apk
+          path: extracted/Feloos/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
