@@ -117,12 +117,12 @@ jobs:
             echo "No game validation script found; continuing."
           fi
 
-      - name: Build debug APK and release AAB
+      - name: Build debug APK, release APK, and release AAB
         shell: bash
         run: |
           set -euo pipefail
           cd android
-          ./gradlew --no-daemon clean assembleDebug bundleRelease
+          ./gradlew --no-daemon clean assembleDebug assembleRelease bundleRelease
 
       - name: Verify build outputs
         shell: bash
@@ -130,9 +130,11 @@ jobs:
           set -euo pipefail
 
           test -f android/app/build/outputs/apk/debug/app-debug.apk
+          test -f android/app/build/outputs/apk/release/app-release-unsigned.apk
           test -f android/app/build/outputs/bundle/release/app-release.aab
 
-          echo "APK and AAB files were generated."
+          echo "Debug APK, unsigned release APK, and release AAB were generated."
+          echo "The release APK must be signed with the original app key before distribution or APKPure update."
 
       - name: Upload APK and AAB
         uses: actions/upload-artifact@v4
@@ -140,6 +142,7 @@ jobs:
           name: Feloos-Android-Build
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
             android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
