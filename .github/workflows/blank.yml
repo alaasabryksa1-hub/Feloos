@@ -41,10 +41,10 @@ jobs:
             ZIP_FILE=""
 
             for candidate in \
-              "Feloos-final-review-candidate.zip" \
-              "Feloos-diverse-1000-questions.zip" \
               "Feloos-ads-implementation.zip" \
               "Feloos-ad-review-fixes.zip" \
+              "Feloos-final-review-candidate.zip" \
+              "Feloos-diverse-1000-questions.zip" \
               "Feloos-source-for-GitHub.zip"; do
               if [ -f "$candidate" ]; then
                 ZIP_FILE="$candidate"
