@@ -61,13 +61,15 @@ jobs:
             mkdir -p /tmp/feloos-source
             unzip -oq "$ZIP_FILE" -d /tmp/feloos-source
 
-            if [ -f "/tmp/feloos-source/Feloos/android/gradlew" ]; then
+            if [ -f "/tmp/feloos-source/Feloos/android/settings.gradle.kts" ] &&
+               [ -f "/tmp/feloos-source/Feloos/android/app/build.gradle.kts" ]; then
               cp -a /tmp/feloos-source/Feloos/. .
-            elif [ -f "/tmp/feloos-source/android/gradlew" ]; then
+            elif [ -f "/tmp/feloos-source/android/settings.gradle.kts" ] &&
+                 [ -f "/tmp/feloos-source/android/app/build.gradle.kts" ]; then
               cp -a /tmp/feloos-source/. .
             else
-              echo "ERROR: ZIP does not contain a complete Android project."
-              find /tmp/feloos-source -maxdepth 4 -type f | head -100
+              echo "ERROR: ZIP does not contain the expected Android Gradle project."
+              find /tmp/feloos-source -maxdepth 6 -type f | head -150
               exit 1
             fi
           fi
@@ -77,7 +79,20 @@ jobs:
           test -f android/app/src/main/java/com/feloos/quiz/MainActivity.kt
           test -f android/app/src/main/java/com/feloos/quiz/RewardedInterstitialController.kt
 
-          chmod +x android/gradlew
+          if [ -f android/gradlew ]; then
+            chmod +x android/gradlew
+          else
+            echo "Gradle wrapper is absent; CI will provision Gradle 8.13."
+          fi
+
+      - name: Install Gradle when wrapper is absent
+        if: ${{ hashFiles('android/gradlew') == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://services.gradle.org/distributions/gradle-8.13-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /opt
+          echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
 
       - name: Validate Google Mobile Ads configuration
         shell: bash
@@ -122,7 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           cd android
-          ./gradlew --no-daemon clean assembleDebug assembleRelease bundleRelease
+          if [ -f ./gradlew ]; then
+            ./gradlew --no-daemon clean assembleDebug assembleRelease bundleRelease
+          else
+            gradle --no-daemon clean assembleDebug assembleRelease bundleRelease
+          fi
 
       - name: Verify build outputs
         shell: bash
